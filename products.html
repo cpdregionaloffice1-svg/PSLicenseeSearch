@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Sheet & Database Search</title>
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 text-gray-900 font-sans antialiased">
+
+    <!-- Sticky Header & Multi-Field Search Bar -->
+    <div class="sticky top-0 bg-white shadow-md p-4 z-10">
+        <h1 class="text-xl font-bold text-center mb-3 text-blue-600">Unified Inventory Search</h1>
+        
+        <!-- Three Search Inputs -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1 tracking-wider">Product Name</label>
+                <input type="text" id="productSearch" oninput="handleSearch()" placeholder="Search product..." 
+                    class="w-full p-2.5 border border-gray-300 rounded-xl shadow-inner focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
+            </div>
+            <div>
+                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1 tracking-wider">Brand Name</label>
+                <input type="text" id="brandSearch" oninput="handleSearch()" placeholder="Search brand..." 
+                    class="w-full p-2.5 border border-gray-300 rounded-xl shadow-inner focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
+            </div>
+            <div>
+                <label class="block text-[10px] font-bold text-gray-400 uppercase mb-1 tracking-wider">License No.</label>
+                <!-- Option B: Pre-filled with "Q-" -->
+                <input type="text" id="licenseSearch" oninput="handleSearch()" value="Q-" placeholder="Search license..." 
+                    class="w-full p-2.5 border border-gray-300 rounded-xl shadow-inner focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
+            </div>
+        </div>
+        
+        <div id="status" class="text-xs text-gray-500 text-center mt-3">Connecting to live spreadsheet...</div>
+    </div>
+
+    <!-- Scrollable Mobile Data List -->
+    <div class="p-4">
+        <div id="results" class="space-y-3">
+            <!-- Results load here -->
+        </div>
+        
+        <!-- Load More Button for Big Datasets -->
+        <div class="text-center mt-6 mb-8">
+            <button id="loadMoreBtn" onclick="loadNextPage()" class="hidden bg-blue-600 text-white px-6 py-2 rounded-xl font-medium shadow hover:bg-blue-700 transition">
+                Load More Results
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // 1. Google Sheet target details
+        const SHEET_ID = '1DSg7CcAPt6c35s4YVj1gF3fpG8nGrwpG'; 
+        const TAB_GID = '1052759647';
+
+        // Global Variables to manage combined datasets safely
+        window.allSheetRecords = []; 
+        window.dbRecords = [];       
+        window.filteredRecords = []; 
+        
+        let currentIndex = 0;
+        const ITEMS_PER_PAGE = 25; 
+        let debounceTimer = null; 
+
+        // 2. CORS-Immune JSONP Script Injection
+        function loadLiveSheetData() {
+            document.getElementById('status').innerText = "Loading spreadsheet data securely...";
+            
+            const jsonpUrl = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?gid=${TAB_GID}&tqx=responseHandler:handleGoogleData`;
+            
+            const script = document.createElement('script');
+            script.src = jsonpUrl;
+            script.onerror = function() {
+                document.getElementById('status').innerText = "Connection error. Make sure the sheet is shared as 'Anyone with the link can view'.";
+            };
+            document.body.appendChild(script);
+        }
+
+        // Callback function triggered automatically by Google when the script loads
+        function handleGoogleData(response) {
+            try {
+                const parsedData = [];
+                const columns = response.table.cols.map(col => col.label || "unnamed");
+                
+                response.table.rows.forEach(row => {
+                    const rowData = { "SOURCE_TYPE": "Google Sheet" };
+                    if (row && row.c) {
+                        row.c.forEach((cell, index) => {
+                            const colName = columns[index];
+                            if (colName && !colName.startsWith("unnamed")) {
+                                rowData[colName] = cell ? (cell.f || cell.v || "") : ""; 
+                            }
+                        });
+                        
+                        // Check if row is not completely empty
+                        const valuesOnly = Object.keys(rowData).filter(k => k !== "SOURCE_TYPE");
+                        if (valuesOnly.some(k => rowData[k] !== "")) {
+                            parsedData.push(rowData);
+                        }
+                    }
+                });
+
+                window.allSheetRecords = parsedData;
+                document.getElementById('status').innerText = `Live Connected: ${parsedData.length} sheet items ready.`;
+                
+                // Instantly execute search on load to apply the initial "Q-" filter
+                handleSearch();
+                
+            } catch (error) {
+                document.getElementById('status').innerText = "Error parsing spreadsheet structure.";
+                console.error("Parser Error:", error);
+            }
+        }
+
+        // 3. Optional Backend DB connection
+        async function fetchDatabaseResults(prodQuery, brandQuery, licQuery) {
+            if (!prodQuery && !brandQuery && !licQuery) {
+                window.dbRecords = [];
+                return;
+            }
+            try {
+                // Future Backend integration endpoint logic
+                window.dbRecords = []; 
+                return;
+            } catch (err) {
+                console.error("Database unavailable:", err);
+                window.dbRecords = []; 
+            }
+        }
+
+        // 4. In-Memory Search Filtering Logic (Product AND Brand AND License)
+        function handleSearch() {
+            clearTimeout(debounceTimer);
+            
+            const productQuery = document.getElementById('productSearch').value.toLowerCase().trim();
+            const brandQuery = document.getElementById('brandSearch').value.toLowerCase().trim();
+            const licenseQuery = document.getElementById('licenseSearch').value.toLowerCase().trim();
+
+            debounceTimer = setTimeout(async () => {
+                let matchedSheets = [];
+
+                if (!productQuery && !brandQuery && !licenseQuery) {
+                    matchedSheets = window.allSheetRecords;
+                    window.dbRecords = [];
+                } else {
+                    // Filter cached sheet records in-memory
+                    matchedSheets = window.allSheetRecords.filter(item => {
+                        
+                        // A. Check Product Name Match
+                        let matchesProduct = true;
+                        if (productQuery) {
+                            matchesProduct = Object.entries(item).some(([key, val]) => {
+                                if (key === "SOURCE_TYPE") return false;
+                                const cleanKey = key.toLowerCase();
+                                if (cleanKey.includes("product") || cleanKey.includes("name") || cleanKey.includes("item")) {
+                                    return String(val).toLowerCase().includes(productQuery);
+                                }
+                                return String(val).toLowerCase().includes(productQuery);
+                            });
+                        }
+
+                        // B. Check Brand Name Match
+                        let matchesBrand = true;
+                        if (brandQuery) {
+                            matchesBrand = Object.entries(item).some(([key, val]) => {
+                                if (key === "SOURCE_TYPE") return false;
+                                const cleanKey = key.toLowerCase();
+                                if (cleanKey.includes("brand") || cleanKey.includes("manufacturer") || cleanKey.includes("mfg") || cleanKey.includes("make")) {
+                                    return String(val).toLowerCase().includes(brandQuery);
+                                }
+                                return String(val).toLowerCase().includes(brandQuery);
+                            });
+                        }
+
+                        // C. Check License No Match
+                        let matchesLicense = true;
+                        if (licenseQuery) {
+                            matchesLicense = Object.entries(item).some(([key, val]) => {
+                                if (key === "SOURCE_TYPE") return false;
+                                const cleanKey = key.toLowerCase();
+                                if (cleanKey.includes("license") || cleanKey.includes("no") || cleanKey.includes("num") || cleanKey.includes("reg")) {
+                                    return String(val).toLowerCase().includes(licenseQuery);
+                                }
+                                return String(val).toLowerCase().includes(licenseQuery);
+                            });
+                        }
+
+                        // Strictly apply AND logic
+                        return matchesProduct && matchesBrand && matchesLicense;
+                    });
+
+                    await fetchDatabaseResults(productQuery, brandQuery, licenseQuery);
+                }
+
+                window.filteredRecords = [...window.dbRecords, ...matchedSheets];
+                combineAndRender();
+            }, 300);
+        }
+
+        // UI Prep Helper
+        function combineAndRender() {
+            const currentProd = document.getElementById('productSearch').value;
+            const currentBrand = document.getElementById('brandSearch').value;
+            const currentLic = document.getElementById('licenseSearch').value;
+            
+            if (window.filteredRecords.length === 0 && !currentProd && !currentBrand && !currentLic) {
+                window.filteredRecords = [...window.allSheetRecords];
+            }
+            currentIndex = 0;
+            document.getElementById('results').innerHTML = '';
+            renderNextChunk();
+        }
+
+        // 5. Output results onto screen cleanly
+        function renderNextChunk() {
+            const container = document.getElementById('results');
+            const totalItems = window.filteredRecords.length;
+            
+            if (totalItems === 0) {
+                container.innerHTML = `<div class="text-center text-gray-500 py-8">No matching items found.</div>`;
+                document.getElementById('loadMoreBtn').classList.add('hidden');
+                return;
+            }
+
+            const nextChunk = window.filteredRecords.slice(currentIndex, currentIndex + ITEMS_PER_PAGE);
+            let htmlBuffer = "";
+
+            nextChunk.forEach(item => {
+                const isDb = item.SOURCE_TYPE === "Database";
+                const cardBorder = isDb ? "border-blue-400 bg-blue-50/30" : "border-gray-200 bg-white";
+                const tagColor = isDb ? "bg-blue-100 text-blue-800" : "bg-teal-100 text-teal-800";
+
+                htmlBuffer += `<div class="p-4 rounded-xl shadow border ${cardBorder} text-left relative pt-8">`;
+                htmlBuffer += `<span class="absolute top-2.5 right-3 text-[9px] font-bold tracking-wider px-2 py-0.5 rounded-full uppercase ${tagColor}">${item.SOURCE_TYPE}</span>`;
+
+                Object.entries(item).forEach(([key, value]) => {
+                    if(value && key !== "SOURCE_TYPE") {
+                        htmlBuffer += `
+                            <p class="text-sm text-gray-600 mb-1">
+                                <strong class="text-gray-400 uppercase text-[10px] tracking-wide block font-semibold">${key.replace(/_/g, ' ')}</strong> 
+                                <span class="text-gray-800 font-medium">${value}</span>
+                            </p>`;
+                    }
+                });
+                htmlBuffer += `</div>`;
+            });
+            
+            container.insertAdjacentHTML('beforeend', htmlBuffer);
+            currentIndex += ITEMS_PER_PAGE;
+
+            if (currentIndex < totalItems) {
+                document.getElementById('loadMoreBtn').classList.remove('hidden');
+            } else {
+                document.getElementById('loadMoreBtn').classList.add('hidden');
+            }
+        }
+
+        function loadNextPage() {
+            renderNextChunk();
+        }
+
+        // App startup initialization
+        loadLiveSheetData();
+    </script>
+</body>
+</html>
